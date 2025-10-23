@@ -1,40 +1,55 @@
 import streamlit as st
-import requests
+from Bio import Entrez
 import pandas as pd
+import xml.etree.ElementTree as ET
 
 st.title("🧬 ClinQuery")
 st.write("Search ClinVar for variant information quickly and easily.")
 
-# Search input
-query = st.text_input("Enter variant or gene name (e.g., BRCA1 c.68_69delAG):")
+# Set your email for NCBI Entrez
+Entrez.email = "your_email@example.com"  # <-- replace with your email
+
+query = st.text_input("Enter gene name or variant (e.g., NPC1 c.3044G>T):")
 
 if query:
     st.info(f"Searching ClinVar for: **{query}** ...")
     try:
-        # Query the ClinVar API
-        url = f"https://api.ncbi.nlm.nih.gov/variation/v0/clinvar?term={query}"
-        response = requests.get(url)
-        response.raise_for_status()
-        data = response.json()
+        # Step 1: Search ClinVar for matching records
+        handle = Entrez.esearch(db="clinvar", term=query, retmax=5)
+        record = Entrez.read(handle)
+        handle.close()
+        id_list = record["IdList"]
 
-        # Extract relevant information
-        if "data" in data and data["data"]:
+        if not id_list:
+            st.warning("No results found.")
+        else:
+            # Step 2: Fetch detailed records
+            handle = Entrez.efetch(db="clinvar", id=",".join(id_list), retmode="xml")
+            data = handle.read()
+            handle.close()
+
+            root = ET.fromstring(data)
             results = []
-            for item in data["data"]:
-                record = {
-                    "Variation ID": item.get("variation_id", "N/A"),
-                    "Clinical Significance": item.get("clinical_significance", {}).get("description", "N/A"),
-                    "Gene": item.get("gene", {}).get("symbol", "N/A"),
-                    "Condition": item.get("condition", [{}])[0].get("name", "N/A"),
-                    "Review Status": item.get("review_status", "N/A"),
-                    "Last Updated": item.get("last_updated", "N/A")
-                }
-                results.append(record)
-            
+
+            # Parse each ClinVar record
+            for clinvar_record in root.findall(".//ClinVarSet"):
+                variation_id = clinvar_record.findtext("ReferenceClinVarAssertion/ClinVarAccession/@Acc")
+                significance = clinvar_record.findtext("ReferenceClinVarAssertion/ClinicalSignificance/Description")
+                gene = clinvar_record.findtext("ReferenceClinVarAssertion/MeasureSet/Measure/MeasureRelationship/Target/Symbol")
+                condition = clinvar_record.findtext("ReferenceClinVarAssertion/TraitSet/Trait/Name/ElementValue")
+                review_status = clinvar_record.findtext("ReferenceClinVarAssertion/ClinicalSignificance/ReviewStatus")
+
+                results.append({
+                    "Variation ID": variation_id or "N/A",
+                    "Clinical Significance": significance or "N/A",
+                    "Gene": gene or "N/A",
+                    "Condition": condition or "N/A",
+                    "Review Status": review_status or "N/A"
+                })
+
             df = pd.DataFrame(results)
             st.success(f"Found {len(df)} matching record(s).")
             st.dataframe(df)
-        else:
-            st.warning("No results found for that query.")
+
     except Exception as e:
         st.error(f"An error occurred: {e}")
