@@ -4,15 +4,14 @@ import pandas as pd
 import xml.etree.ElementTree as ET
 
 st.title("🧬 ClinQuery")
-st.write("Search ClinVar for variant information by gene and HGVS cDNA notation.")
+st.write("Search ClinVar for variants by gene. All variants for the gene will be returned.")
 
 # Set your email for NCBI Entrez
 Entrez.email = "daniel.rappaport@sickkids.ca"  # <-- replace with your email
 
 st.sidebar.header("Variant Lookup")
-
 gene = st.sidebar.text_input("Gene symbol (e.g., NPC1):")
-variant = st.sidebar.text_input("HGVS cDNA (e.g., c.3044G>T):")
+variant = st.sidebar.text_input("Optional: HGVS cDNA (e.g., c.3044G>T):")
 
 if st.sidebar.button("Search"):
     if not gene:
@@ -20,9 +19,9 @@ if st.sidebar.button("Search"):
     else:
         st.info(f"Searching ClinVar for gene: **{gene}** ...")
         try:
-            # Step 1: search ClinVar by gene only
+            # Step 1: search ClinVar by gene
             query = f'"{gene}"[GENE]'
-            handle = Entrez.esearch(db="clinvar", term=query, retmax=50)  # fetch up to 50 variants
+            handle = Entrez.esearch(db="clinvar", term=query, retmax=50)
             record = Entrez.read(handle)
             handle.close()
             id_list = record["IdList"]
@@ -57,11 +56,6 @@ if st.sidebar.button("Search"):
                             elif t_type == "HGVS protein":
                                 hgvs_p.append(t_value)
 
-                    # Filter if user entered a variant
-                    if variant:
-                        if not any(variant in s for s in hgvs_c):
-                            continue  # skip this record if cDNA doesn't match
-
                     results.append({
                         "RCV ID": rcv_id or "N/A",
                         "Clinical Significance": significance or "N/A",
@@ -71,12 +65,53 @@ if st.sidebar.button("Search"):
                         "HGVS Protein": ", ".join(hgvs_p) if hgvs_p else "N/A"
                     })
 
-                if results:
-                    df = pd.DataFrame(results)
+                # Convert to DataFrame
+                df = pd.DataFrame(results)
+
+                # Optional: filter table locally if user entered HGVS variant
+                if variant:
+                    df = df[df["HGVS cDNA"].str.contains(variant, na=False)]
+
+                if not df.empty:
                     st.success(f"Found {len(df)} matching record(s).")
                     st.dataframe(df)
                 else:
-                    st.warning("No records match the HGVS variant entered.")
+                    st.warning("No records match the HGVS variant entered. Showing all variants for the gene:")
+                    # Show unfiltered table for gene
+                    handle = Entrez.efetch(db="clinvar", id=",".join(id_list), retmode="xml")
+                    data = handle.read()
+                    handle.close()
+
+                    root = ET.fromstring(data)
+                    all_results = []
+                    for clinvar_record in root.findall(".//ClinVarSet"):
+                        significance = clinvar_record.findtext("ReferenceClinVarAssertion/ClinicalSignificance/Description")
+                        condition = clinvar_record.findtext("ReferenceClinVarAssertion/TraitSet/Trait/Name/ElementValue")
+                        review_status = clinvar_record.findtext("ReferenceClinVarAssertion/ClinicalSignificance/ReviewStatus")
+                        rcv_id = clinvar_record.findtext("ClinVarAccession/Acc")
+
+                        hgvs_c = []
+                        hgvs_p = []
+                        measures = clinvar_record.findall(".//Measure")
+                        for m in measures:
+                            for t in m.findall(".//AttributeSet/Attribute"):
+                                t_type = t.findtext("Type")
+                                t_value = t.findtext("Value")
+                                if t_type == "HGVS cDNA":
+                                    hgvs_c.append(t_value)
+                                elif t_type == "HGVS protein":
+                                    hgvs_p.append(t_value)
+
+                        all_results.append({
+                            "RCV ID": rcv_id or "N/A",
+                            "Clinical Significance": significance or "N/A",
+                            "Condition": condition or "N/A",
+                            "Review Status": review_status or "N/A",
+                            "HGVS cDNA": ", ".join(hgvs_c) if hgvs_c else "N/A",
+                            "HGVS Protein": ", ".join(hgvs_p) if hgvs_p else "N/A"
+                        })
+
+                    st.dataframe(pd.DataFrame(all_results))
 
         except Exception as e:
             st.error(f"An error occurred: {e}")
