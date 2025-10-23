@@ -1,28 +1,40 @@
-#app.py
-
 import streamlit as st
 import requests
 import pandas as pd
 
-st.set_page_config(page_title="ClinQuery", layout="centered")
-st.title("ClinQuery")
-st.markdown("Quick lookup: ClinVar + gnomAD (prototype)")
+st.title("🧬 ClinQuery")
+st.write("Search ClinVar for variant information quickly and easily.")
 
-st.sidebar.header("Lookup")
-query = st.sidebar.text_input("Enter gene name, HGVS c. notation, or rsID", "")
+# Search input
+query = st.text_input("Enter variant or gene name (e.g., BRCA1 c.68_69delAG):")
 
-if st.sidebar.button("Search") and query.strip():
-    st.info(f"Searching for: **{query}** — this is a prototype demo.")
-    # Minimal placeholder logic: show the query back and a fake example table.
-    # Replace this block later with real API calls to ClinVar/gnomAD.
-    example = {
-        "variant": [query],
-        "clinvar_significance": ["Not queried yet (prototype)"],
-        "gnomad_af": ["Not queried yet (prototype)"],
-        "notes": ["Replace with real API results"]
-    }
-    df = pd.DataFrame(example)
-    st.table(df)
-else:
-    st.write("Type a variant (e.g., `NPC1 c.3220A>T` or `rs12345`) in the sidebar and click **Search**.")
-    st.markdown("When you're ready I can help add real ClinVar / gnomAD API calls.")
+if query:
+    st.info(f"Searching ClinVar for: **{query}** ...")
+    try:
+        # Query the ClinVar API
+        url = f"https://api.ncbi.nlm.nih.gov/variation/v0/clinvar?term={query}"
+        response = requests.get(url)
+        response.raise_for_status()
+        data = response.json()
+
+        # Extract relevant information
+        if "data" in data and data["data"]:
+            results = []
+            for item in data["data"]:
+                record = {
+                    "Variation ID": item.get("variation_id", "N/A"),
+                    "Clinical Significance": item.get("clinical_significance", {}).get("description", "N/A"),
+                    "Gene": item.get("gene", {}).get("symbol", "N/A"),
+                    "Condition": item.get("condition", [{}])[0].get("name", "N/A"),
+                    "Review Status": item.get("review_status", "N/A"),
+                    "Last Updated": item.get("last_updated", "N/A")
+                }
+                results.append(record)
+            
+            df = pd.DataFrame(results)
+            st.success(f"Found {len(df)} matching record(s).")
+            st.dataframe(df)
+        else:
+            st.warning("No results found for that query.")
+    except Exception as e:
+        st.error(f"An error occurred: {e}")
