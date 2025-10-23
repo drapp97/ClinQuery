@@ -7,7 +7,7 @@ st.title("🧬 ClinQuery")
 st.write("Search ClinVar for variant information quickly and easily.")
 
 # Set your email for NCBI Entrez
-Entrez.email = "your_email@example.com"  # <-- replace with your email
+Entrez.email = "daniel.rappaport@sickkids.ca"  # <-- replace with your email
 
 query = st.text_input("Enter gene name or variant (e.g., NPC1 c.3044G>T):")
 
