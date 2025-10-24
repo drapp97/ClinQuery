@@ -6,8 +6,10 @@ import xml.etree.ElementTree as ET
 st.title("🧬 ClinQuery")
 st.write("Search ClinVar variants by gene. Optional HGVS cDNA filter.")
 
-# Set your email for NCBI Entrez
-Entrez.email = "your_email@example.com"  # <-- replace with your real email
+# Load from secrets
+Entrez.email = st.secrets["email"]
+Entrez.api_key = st.secrets["ncbi_api_key"]
+
 
 st.sidebar.header("Variant Lookup")
 gene = st.sidebar.text_input("Gene symbol (e.g., BRCA1):")
