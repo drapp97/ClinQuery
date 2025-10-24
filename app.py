@@ -1,87 +1,108 @@
+# app.py
 import streamlit as st
-from Bio import Entrez
+import requests
 import pandas as pd
-import xml.etree.ElementTree as ET
+import urllib.parse
 
+st.set_page_config(page_title="ClinQuery", layout="wide")
 st.title("🧬 ClinQuery")
-st.write("Search ClinVar variants by gene. Optional HGVS cDNA filter.")
+st.write("Search ClinVar variants (via NLM ClinicalTables API). Enter a gene and optionally an HGVS cDNA substring to filter results.")
 
-# Load from secrets
-Entrez.email = st.secrets["email"]
-Entrez.api_key = st.secrets["ncbi_api_key"]
-
-
-st.sidebar.header("Variant Lookup")
-gene = st.sidebar.text_input("Gene symbol (e.g., BRCA1):")
-variant = st.sidebar.text_input("Optional: HGVS cDNA (e.g., c.68_69delAG)")
+# Sidebar inputs
+st.sidebar.header("Variant lookup")
+gene = st.sidebar.text_input("Gene symbol (e.g., BRCA1)", "")
+hgvs_filter = st.sidebar.text_input("Optional: HGVS cDNA substring (e.g., c.68_69delAG)", "")
+max_results = st.sidebar.number_input("Max results to request (max 500)", min_value=1, max_value=500, value=50, step=1)
 
 if st.sidebar.button("Search"):
+    gene = gene.strip()
     if not gene:
-        st.warning("Please enter a gene.")
+        st.sidebar.error("Please enter a gene symbol.")
     else:
-        st.info(f"Searching ClinVar for gene: {gene} ...")
+        st.info(f"Searching for gene: **{gene}** (assembly GRCh37/na dataset) ...")
+
+        # Build ClinicalTables API request
+        base = "https://clinicaltables.nlm.nih.gov/api/variants/v4/search"
+        params = {
+            "terms": gene,
+            "count": max_results,   # page size
+            "offset": 0,
+            # df = display fields we want in the display output (human readable)
+            "df": "VariationID,HGVS_c,HGVS_p,GeneSymbol,dbSNP,phenotype,GenomicLocation",
+            # ef = extra fields we want in the extra-data hash (json)
+            "ef": "GeneSymbol,HGVS_c,HGVS_p,VariationID,dbSNP,phenotype,GenomicLocation"
+        }
+
+        url = base + "?" + urllib.parse.urlencode(params, safe=',:')
         try:
-            # Step 1: Search ClinVar by gene to get IDs
-            search_handle = Entrez.esearch(db="clinvar", term=f"{gene}[GENE]", retmax=100)
-            search_record = Entrez.read(search_handle)
-            search_handle.close()
-            id_list = search_record["IdList"]
+            r = requests.get(url, timeout=20)
+            r.raise_for_status()
+            resp = r.json()
+            # Response format (see docs):
+            # resp[0] = total number available (int)
+            # resp[1] = list of codes (VariationIDs)
+            # resp[2] = dict of extra fields (each key -> list of values aligned with codes)
+            # resp[3] = display strings (array per code)
+            total = resp[0] if len(resp) > 0 else 0
+            codes = resp[1] if len(resp) > 1 else []
+            extra = resp[2] if len(resp) > 2 else {}
+            display = resp[3] if len(resp) > 3 else []
 
-            if not id_list:
-                st.warning(f"No variants found for gene {gene}.")
+            if not codes:
+                st.warning(f"No variants found for gene {gene}. (Try increasing Max results.)")
             else:
-                # Step 2: Fetch detailed records
-                fetch_handle = Entrez.efetch(db="clinvar", id=",".join(id_list), retmode="xml")
-                fetch_data = fetch_handle.read()
-                fetch_handle.close()
+                # Build dataframe from 'codes' + extra fields
+                df_dict = {
+                    "VariationID": codes
+                }
+                # include selected extra fields if present
+                for key in ["GeneSymbol", "HGVS_c", "HGVS_p", "dbSNP", "phenotype", "GenomicLocation"]:
+                    df_dict[key] = extra.get(key, ["N/A"] * len(codes))
 
-                root = ET.fromstring(fetch_data)
-                results = []
+                df = pd.DataFrame(df_dict)
 
-                for clinvar_record in root.findall(".//ClinVarSet"):
-                    # Safe parsing of core fields
-                    rcv_id = clinvar_record.findtext("ClinVarAccession/Acc") or "N/A"
-                    clinical_significance = clinvar_record.findtext("ReferenceClinVarAssertion/ClinicalSignificance/Description") or "N/A"
-                    review_status = clinvar_record.findtext("ReferenceClinVarAssertion/ClinicalSignificance/ReviewStatus") or "N/A"
-                    condition = clinvar_record.findtext("ReferenceClinVarAssertion/TraitSet/Trait/Name/ElementValue") or "N/A"
-
-                    # Collect HGVS strings if present
-                    hgvs_c = []
-                    hgvs_p = []
-                    measures = clinvar_record.findall(".//Measure")
-                    for m in measures:
-                        for attr in m.findall(".//AttributeSet/Attribute"):
-                            t_type = attr.findtext("Type")
-                            t_value = attr.findtext("Value")
-                            if t_type and t_value:
-                                if t_type == "HGVS cDNA":
-                                    hgvs_c.append(t_value)
-                                elif t_type == "HGVS protein":
-                                    hgvs_p.append(t_value)
-
-                    results.append({
-                        "RCV ID": rcv_id,
-                        "Clinical Significance": clinical_significance,
-                        "Review Status": review_status,
-                        "Condition": condition,
-                        "HGVS cDNA": ", ".join(hgvs_c) if hgvs_c else "N/A",
-                        "HGVS Protein": ", ".join(hgvs_p) if hgvs_p else "N/A"
-                    })
-
-                df = pd.DataFrame(results)
-
-                # Optional: local HGVS filter
-                if variant:
-                    df_filtered = df[df["HGVS cDNA"].str.contains(variant, na=False)]
-                    if not df_filtered.empty:
-                        st.success(f"Found {len(df_filtered)} matching record(s) for HGVS variant {variant}.")
-                        st.dataframe(df_filtered)
-                    else:
-                        st.warning(f"No records exactly match HGVS variant '{variant}'. Showing all variants for gene {gene}:")
-                        st.dataframe(df)
+                # Normalize columns
+                if "HGVS_c" in df.columns:
+                    df["HGVS_c"] = df["HGVS_c"].astype(str).replace("None", "")
                 else:
-                    st.success(f"Found {len(df)} variants for gene {gene}.")
-                    st.dataframe(df)
+                    df["HGVS_c"] = ""
 
+                # Optional filter by user-entered HGVS substring (case-insensitive)
+                if hgvs_filter.strip():
+                    pat = hgvs_filter.strip()
+                    mask = df["HGVS_c"].str.contains(pat, case=False, na=False)
+                    df_filtered = df[mask]
+                    if df_filtered.empty:
+                        st.warning(f"No records matched HGVS substring '{hgvs_filter}'. Showing unfiltered results for gene {gene}.")
+                        display_df = df
+                    else:
+                        st.success(f"Found {len(df_filtered)} record(s) matching HGVS substring '{hgvs_filter}'.")
+                        display_df = df_filtered
+                else:
+                    st.success(f"Found {len(df)} variant(s) (showing up to {max_results}).")
+                    display_df = df
+
+                # Add ClinVar clickable link column
+                def clinvar_link(vid):
+                    try:
+                        return f"https://www.ncbi.nlm.nih.gov/clinvar/variation/{vid}/"
+                    except:
+                        return ""
+
+                display_df = display_df.reset_index(drop=True)
+                display_df["ClinVar Link"] = display_df["VariationID"].apply(lambda v: clinvar_link(v))
+
+                # Show a table with clickable links
+                # Streamlit can't make a DataFrame column directly clickable; use st.write with markdown in one column
+                display_df_for_show = display_df.copy()
+                display_df_for_show["ClinVar Link"] = display_df_for_show["ClinVar Link"].apply(lambda u: f"[link]({u})" if u else "")
+                st.dataframe(display_df_for_show, use_container_width=True)
+
+                # Also provide CSV download
+                csv = display_df.to_csv(index=False)
+                st.download_button("Download results as CSV", csv, file_name=f"{gene}_clinvar_variants.csv", mime="text/csv")
+
+        except requests.exceptions.RequestException as e:
+            st.error(f"Network/API error: {e}")
         except Exception as e:
-            st.error(f"An error occurred: {e}")
+            st.error(f"Unexpected error: {e}")
